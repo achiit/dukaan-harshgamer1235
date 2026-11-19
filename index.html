@@ -1,0 +1,74 @@
+val myUid get() = auth.currentUser?.uid ?: ""
+val myName get() = auth.currentUser?.displayName ?: "User"
+
+fun messages(roomId: String = "global"): Flow<List<Message>> = callbackFlow {
+    val reg = db.collection("rooms").document(roomId).collection("messages")
+        .orderBy("createdAt", Query.Direction.ASCENDING).limitToLast(100)
+        .addSnapshotListener { snap, _ ->
+            val list = snap?.documents?.map { d ->
+                Message(
+                    id = d.id,
+                    senderId = d.getString("senderId") ?: "",
+                    senderName = d.getString("senderName") ?: "",
+                    text = d.getString("text") ?: "",
+                    createdAt = d.getLong("createdAt") ?: 0
+                )
+            } ?: emptyList()
+            trySend(list)
+        }
+    awaitClose { reg.remove() }
+}
+
+suspend fun send(text: String, roomId: String = "global") {
+    if (text.isBlank() || text.length > 1000) return
+    db.collection("rooms").document(roomId).collection("messages").add(
+        mapOf(
+            "senderId" to myUid,
+            "senderName" to myName,
+            "text" to text.trim(),
+            "createdAt" to System.currentTimeMillis()
+        )
+    ).await()
+}
+
+suspend fun reportMessage(msg: Message, reason: String) {
+    db.collection("reports").add(
+        mapOf(
+            "type" to "message",
+            "messageId" to msg.id,
+            "reportedUid" to msg.senderId,
+            "reportedText" to msg.text,
+            "reason" to reason,
+            "reporterUid" to myUid,
+            "createdAt" to System.currentTimeMillis()
+        )
+    ).await()
+}
+
+suspend fun blockUser(uid: String) {
+    db.collection("users").document(myUid).collection("blocked").document(uid)
+        .set(mapOf("createdAt" to System.currentTimeMillis())).await()
+}
+
+suspend fun blockedList(): Set<String> {
+    val snap = db.collection("users").document(myUid).collection("blocked").get().await()
+    return snap.documents.map { it.id }.toSet()
+}
+
+suspend fun askQuestion(question: String) {
+    db.collection("questions").add(
+        mapOf(
+            "uid" to myUid,
+            "name" to myName,
+            "question" to question.trim(),
+            "answer" to "",
+            "createdAt" to System.currentTimeMillis()
+        )
+    ).await()
+}
+
+suspend fun myQuestions(): List<Map<String, Any>> {
+    val snap = db.collection("questions").whereEqualTo("uid", myUid).get().await()
+    return snap.documents.mapNotNull { it.data }
+        .sortedByDescending { (it["createdAt"] as? Long) ?: 0L }
+}
